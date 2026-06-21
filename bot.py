@@ -174,7 +174,7 @@ async def select_package(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📤 *Payment details:*\n"
         f"• PayPal: Message `@jeapppp`\n"
         f"• LTC: `LQLgC9FiL22wEV5AJbfHYKVhFdQGLV6yMa`\n"
-        f"• BTC: `bc1qqygz4wls7rdy3fq3lnd6ewgx3c2nwun7d0s0ws`\n\n"
+        f"• BTC: `bc1qqygz4wls7rdy3fq3lnd6ewgx3c2nwun7d0s0ws`\n"
         f"• ETH: `0x942a69f83C38652C09E6E062003FA50E126C53DD`\n\n"
         f"Reference: `AD-{query.from_user.id}`\n\n"
         f"After payment → press *Send Payment Proof*!",
