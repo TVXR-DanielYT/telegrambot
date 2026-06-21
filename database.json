@@ -1,0 +1,20 @@
+{
+  "users": {
+    "5391207860": {
+      "credits": 99999999999999,
+      "ads_sent": 0,
+      "joined": "2026-06-21 21:38:52.295902"
+    }
+  },
+  "groups": {},
+  "ads": [],
+  "pending_payments": {
+    "5391207860": {
+      "package": "ultra",
+      "credits": 5000,
+      "price": "60\u20ac",
+      "time": "2026-06-21 21:58:07.174519",
+      "username": "jeapppp"
+    }
+  }
+}
