@@ -727,6 +727,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_join, pattern="^check_join$"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
+    
 
     logger.info("🤖 JpxqAdvertise started!")
     app.run_polling()
