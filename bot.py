@@ -8,6 +8,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
+from telegram.error import TelegramError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +29,15 @@ CREDIT_PACKAGES = {
 # Cost per ad post (per group)
 CREDITS_PER_GROUP = 10
 
+# ─── REFERRAL CONFIG ───────────────────────────────────────────────────────────
+REFERRAL_BONUS_CREDITS = 5
+
+# ─── REQUIRED CHANNELS (forced join) ───────────────────────────────────────────
+REQUIRED_CHANNELS = [
+    {"username": "@jpxqstock", "url": "https://t.me/jpxqstock", "name": "Jpxq Stock"},
+    {"username": "@jpxqbotsupport", "url": "https://t.me/jpxqbotsupport", "name": "Jpxq Bot Support"},
+]
+
 # DB file (simple JSON – use PostgreSQL for production)
 DB_FILE = "database.json"
 
@@ -45,8 +55,20 @@ def save_db(db):
 def get_user(db, user_id):
     uid = str(user_id)
     if uid not in db["users"]:
-        db["users"][uid] = {"credits": 0, "ads_sent": 0, "joined": str(datetime.now())}
-    return db["users"][uid]
+        db["users"][uid] = {
+            "credits": 0,
+            "ads_sent": 0,
+            "joined": str(datetime.now()),
+            "referred_by": None,
+            "referrals": [],
+            "verified": False,
+        }
+    # backfill fields for users created before referral system existed
+    user = db["users"][uid]
+    user.setdefault("referred_by", None)
+    user.setdefault("referrals", [])
+    user.setdefault("verified", False)
+    return user
 
 # ─── CONVERSATION STATES ───────────────────────────────────────────────────────
 WAITING_AD_TEXT, WAITING_AD_CONFIRM, WAITING_PAYMENT_PROOF = range(3)
@@ -63,21 +85,93 @@ def credits_keyboard():
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     return InlineKeyboardMarkup(buttons)
 
-# ─── /START ────────────────────────────────────────────────────────────────────
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    db = load_db()
-    user = get_user(db, update.effective_user.id)
-    save_db(db)
-
-    name = update.effective_user.first_name
-    credits = user["credits"]
-
-    keyboard = InlineKeyboardMarkup([
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Post an Ad", callback_data="post_ad"),
          InlineKeyboardButton("💳 Buy Credits", callback_data="buy_credits")],
         [InlineKeyboardButton("📊 My Account", callback_data="my_account"),
          InlineKeyboardButton("ℹ️ How it works", callback_data="how_it_works")],
+        [InlineKeyboardButton("🎁 Referral Program", callback_data="referral")],
     ])
+
+def join_keyboard():
+    buttons = [[InlineKeyboardButton(f"📢 Join {ch['name']}", url=ch["url"])] for ch in REQUIRED_CHANNELS]
+    buttons.append([InlineKeyboardButton("✅ I joined – Check", callback_data="check_join")])
+    return InlineKeyboardMarkup(buttons)
+
+async def is_member_of_all(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    for ch in REQUIRED_CHANNELS:
+        try:
+            member = await ctx.bot.get_chat_member(ch["username"], user_id)
+            if member.status in ("left", "kicked"):
+                return False
+        except TelegramError as e:
+            logger.error(f"Could not check membership for {ch['username']}: {e}")
+            # If the bot can't check (e.g. not admin in channel), fail closed
+            return False
+    return True
+
+async def send_join_prompt(send_func):
+    await send_func(
+        "👋 *Welcome!*\n\n"
+        "Before you can use this bot, please join our channels:\n\n"
+        + "\n".join([f"• {ch['name']}" for ch in REQUIRED_CHANNELS]) +
+        "\n\nAfter joining both, press *I joined – Check* below 👇",
+        parse_mode="Markdown",
+        reply_markup=join_keyboard()
+    )
+
+async def grant_referral_bonus(ctx: ContextTypes.DEFAULT_TYPE, db, new_user_id: int):
+    """Credit the referrer once the new user is verified (joined channels)."""
+    new_user = get_user(db, new_user_id)
+    referrer_id = new_user.get("referred_by")
+    if not referrer_id:
+        return
+    referrer = get_user(db, referrer_id)
+    if str(new_user_id) in referrer.get("referrals", []):
+        return  # already credited
+    referrer["credits"] += REFERRAL_BONUS_CREDITS
+    referrer["referrals"].append(str(new_user_id))
+    save_db(db)
+    try:
+        await ctx.bot.send_message(
+            int(referrer_id),
+            f"🎉 *Referral Bonus!*\n\n"
+            f"Someone joined using your referral link!\n"
+            f"✅ +{REFERRAL_BONUS_CREDITS} Credits added.\n"
+            f"💰 New balance: *{referrer['credits']} Credits*",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify referrer {referrer_id}: {e}")
+
+# ─── /START ────────────────────────────────────────────────────────────────────
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    db = load_db()
+    user_id = update.effective_user.id
+    user = get_user(db, user_id)
+
+    # Capture referral code on first ever /start (deep link: /start ref_123456)
+    if user["referred_by"] is None and ctx.args:
+        arg = ctx.args[0]
+        if arg.startswith("ref_"):
+            ref_id = arg.replace("ref_", "")
+            if ref_id.isdigit() and int(ref_id) != user_id and str(user_id) not in db["users"].get(ref_id, {}).get("referrals", []):
+                user["referred_by"] = ref_id
+    save_db(db)
+
+    # Forced channel join check
+    if not user["verified"]:
+        if await is_member_of_all(ctx, user_id):
+            user["verified"] = True
+            save_db(db)
+            await grant_referral_bonus(ctx, db, user_id)
+        else:
+            await send_join_prompt(update.message.reply_text)
+            return
+
+    name = update.effective_user.first_name
+    credits = user["credits"]
 
     await update.message.reply_text(
         f"👋 Hey {name}!\n\n"
@@ -89,8 +183,35 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"• Fast, simple & affordable!\n\n"
         f"What would you like to do?",
         parse_mode="Markdown",
-        reply_markup=keyboard
+        reply_markup=main_menu_keyboard()
     )
+
+# ─── CHECK JOIN (button) ───────────────────────────────────────────────────────
+async def check_join(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    db = load_db()
+    user_id = query.from_user.id
+    user = get_user(db, user_id)
+
+    if await is_member_of_all(ctx, user_id):
+        if not user["verified"]:
+            user["verified"] = True
+            save_db(db)
+            await grant_referral_bonus(ctx, db, user_id)
+        else:
+            save_db(db)
+
+        await query.edit_message_text(
+            f"✅ *Verified!* Welcome aboard.\n\n"
+            f"💰 Your Credits: *{user['credits']}*\n\n"
+            f"What would you like to do?",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard()
+        )
+    else:
+        await query.answer("❌ You haven't joined both channels yet!", show_alert=True)
 
 # ─── HOW IT WORKS ──────────────────────────────────────────────────────────────
 async def how_it_works(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -131,11 +252,39 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 ID: `{query.from_user.id}`\n"
         f"💰 Credits: *{user['credits']}*\n"
         f"📢 Ads sent: *{user['ads_sent']}*\n"
+        f"👥 Referrals: *{len(user['referrals'])}*\n"
         f"📅 Member since: {user['joined'][:10]}\n\n"
         f"📈 With your credits you can target *{user['credits'] // CREDITS_PER_GROUP}* more groups!",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💳 Buy Credits", callback_data="buy_credits")],
+            [InlineKeyboardButton("🎁 Referral Program", callback_data="referral")],
+            [InlineKeyboardButton("🔙 Back", callback_data="back_main")]
+        ])
+    )
+
+# ─── REFERRAL PROGRAM ──────────────────────────────────────────────────────────
+async def referral_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    db = load_db()
+    user = get_user(db, query.from_user.id)
+    bot_username = (await ctx.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{query.from_user.id}"
+
+    await query.edit_message_text(
+        f"🎁 *Referral Program*\n\n"
+        f"Invite friends and earn *{REFERRAL_BONUS_CREDITS} Credits* for every person "
+        f"who joins using your link!\n\n"
+        f"🔗 *Your referral link:*\n`{ref_link}`\n\n"
+        f"👥 Total referrals: *{len(user['referrals'])}*\n"
+        f"💰 Earned: *{len(user['referrals']) * REFERRAL_BONUS_CREDITS} Credits*\n\n"
+        f"Just share your link – credits are added automatically once your friend "
+        f"joins the required channels!",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={ref_link}&text=Join%20and%20earn%20credits!")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_main")]
         ])
     )
@@ -521,16 +670,10 @@ async def back_main(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     db = load_db()
     user = get_user(db, query.from_user.id)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Post an Ad", callback_data="post_ad"),
-         InlineKeyboardButton("💳 Buy Credits", callback_data="buy_credits")],
-        [InlineKeyboardButton("📊 My Account", callback_data="my_account"),
-         InlineKeyboardButton("ℹ️ How it works", callback_data="how_it_works")],
-    ])
     await query.edit_message_text(
         f"🏠 *Main Menu*\n\n💰 Credits: *{user['credits']}*",
         parse_mode="Markdown",
-        reply_markup=keyboard
+        reply_markup=main_menu_keyboard()
     )
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -580,6 +723,8 @@ def main():
     app.add_handler(CallbackQueryHandler(select_package, pattern="^buy_(starter|basic|pro|ultra)$"))
     app.add_handler(CallbackQueryHandler(my_account, pattern="^my_account$"))
     app.add_handler(CallbackQueryHandler(how_it_works, pattern="^how_it_works$"))
+    app.add_handler(CallbackQueryHandler(referral_menu, pattern="^referral$"))
+    app.add_handler(CallbackQueryHandler(check_join, pattern="^check_join$"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
 
