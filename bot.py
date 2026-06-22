@@ -81,7 +81,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"👋 Hey {name}!\n\n"
-        f"🤖 *AdBot* – Your Telegram Advertising Network\n\n"
+        f"🤖 *JpxqAdvertise* – Your Telegram Advertising Network\n\n"
         f"💰 Your Credits: *{credits}*\n\n"
         f"📢 Advertise across our group network!\n"
         f"• Each group costs *{CREDITS_PER_GROUP} Credits*\n"
@@ -101,7 +101,7 @@ async def how_it_works(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     group_count = len(db["groups"])
 
     await query.edit_message_text(
-        "ℹ️ *How does AdBot work?*\n\n"
+        "ℹ️ *How does JpxqAdvertise work?*\n\n"
         "1️⃣ *Buy Credits* – Choose a package and complete the payment\n"
         "2️⃣ *Send proof* – Send us a screenshot of your payment\n"
         "3️⃣ *Credits unlocked* – Our admin confirms and adds your credits\n"
@@ -368,7 +368,7 @@ async def confirm_ad(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             failed += 1
         # Cooldown to avoid Telegram rate limits
         if i < len(groups) - 1:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(3.5)
 
     db["ads"].append({
         "user_id": query.from_user.id,
@@ -583,7 +583,7 @@ def main():
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(cancel, pattern="^cancel$"))
 
-    logger.info("🤖 AdBot started!")
+    logger.info("🤖 JpxqAdvertise started!")
     app.run_polling()
 
 if __name__ == "__main__":
